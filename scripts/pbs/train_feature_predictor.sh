@@ -22,9 +22,10 @@ export MAIN_PORT=$((10000 + RANDOM % 20000))
 export HYDRA_FULL_ERROR=1
 
 uv run python src/sidon/train.py \
-  data=preprocessed_48k \
-  data.datamodule.batch_size=4 \
-  model=sidon_vocoder_pretrain \
+  data=preprocessed \
+  data.datamodule.batch_size=32 \
+  model=sidon_feature_predictor \
   train=default \
-  train.trainer.gradient_clip_val=null \
+  train.trainer.precision=bf16-mixed \
+  "train.ckpt_path='/home/acc12576tt/github.com/Sidon/sidon/t2h90k5j/checkpoints/epoch=13-step=388305.ckpt'" \
   hydra.run.dir=/groups/gag51394/users/nakata/sidon_runs/${PBS_JOBID}

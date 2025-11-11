@@ -1,12 +1,12 @@
 lightning_module:
-  _target_: sidon.model.SidonLightningModule
+  _target_: sidon.model.dialogue_sidion.lightning_module.DialogueSidonLightningModule
   _recursive_: false
 
 cfg:
-  ssl_model_name: # path to feature predictor checkpoint
-  sample_rate: 48000
-  pretraining: false
-  pretrain_path: null
+  ssl_model_name: facebook/w2v-bert-2.0
+  sample_rate: 24000
+  pretraining: True
+  student_layer: 16
 
   dac_loss:
     stft_loss:

@@ -24,7 +24,9 @@ export HYDRA_FULL_ERROR=1
 uv run python src/sidon/train.py \
   data=preprocessed_48k \
   data.datamodule.batch_size=4 \
-  model=sidon_vocoder_pretrain \
+  model=sidon_vocoder_finetune \
+  "model.cfg.ssl_model_name='/home/acc12576tt/github.com/Sidon/sidon/t2h90k5j/checkpoints/epoch=13-step=388305.ckpt'" \
+  "model.cfg.pretrain_path='/home/acc12576tt/github.com/Sidon/sidon/60n5ebis/checkpoints/epoch=2-step=366468.ckpt'" \
   train=default \
   train.trainer.gradient_clip_val=null \
   hydra.run.dir=/groups/gag51394/users/nakata/sidon_runs/${PBS_JOBID}

@@ -1,6 +1,6 @@
 #!/bin/sh
 #PBS -q rt_HC
-#PBS -l select=1:ncpus=16:ngpus=1:mem=64gb
+#PBS -l select=1
 #PBS -l walltime=48:00:00
 #PBS -P gag51394
 #PBS -j oe

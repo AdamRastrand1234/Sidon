@@ -22,9 +22,9 @@ export MAIN_PORT=$((10000 + RANDOM % 20000))
 export HYDRA_FULL_ERROR=1
 
 uv run python src/sidon/train.py \
-  data=preprocessed_48k \
-  data.datamodule.batch_size=4 \
-  model=sidon_vocoder_pretrain \
+  data=dialogue_preprocessed \
+  data.datamodule.batch_size=8\
+  model=dialogue_clean_feature_predictor \
   train=default \
-  train.trainer.gradient_clip_val=null \
-  hydra.run.dir=/groups/gag51394/users/nakata/sidon_runs/${PBS_JOBID}
+  train.trainer.precision=bf16-mixed \
+  hydra.run.dir=/groups/gag51394/users/nakata/dialogue_sidon_runs/${PBS_JOBID}

@@ -1,0 +1,12 @@
+datamodule:
+  _target_: sidon.data.preprocess.dialogue_datamodule.PreprocessedDialogueDataModule
+  train_urls:
+    - /groups/gag51394/users/nakata/shards_test/dialogue_24k_normalize/valid/
+  val_urls:
+    - /groups/gag51394/users/nakata/shards_test/dialogue_24k_normalize/valid/
+  batch_size: 2
+  val_batch_size: 2
+  train_num_workers: 4
+  val_num_workers: 4
+  preprocessed: true
+  is_s3: false
