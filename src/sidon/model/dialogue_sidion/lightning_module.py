@@ -24,6 +24,7 @@ from .model import add_cond_adapters_all_layers, FiLM
 from .audio import extract_seamless_m4t_features
 from typing import Optional, Union
 from transformers.models.wav2vec2_bert.modeling_wav2vec2_bert import Wav2Vec2BertBaseModelOutput
+from sidon.model.flow_dialogue_sidon.lightning_module import SSLVAE
 
 from sidon.model.losses import DACLoss, GANLoss
 
@@ -149,28 +150,16 @@ class DialogueFeaturePredictorLightningModule(LightningModule):
             cfg.ssl_model_name, num_hidden_layers=16, layerdrop=0.0
         ).train()
         self.student_ssl_model.setup_conditioning_layer(256,2)
-        self.teacher_ssl_model = transformers.Wav2Vec2BertModel.from_pretrained(
-            cfg.ssl_model_name, num_hidden_layers=8
+        self.vae = SSLVAE.load_from_checkpoint(
+            cfg.vae_checkpoint_path
         ).eval()
-        self.use_lora = cfg.get('use_lora', False)
-        if self.use_lora:
-            adapter_config = LoraConfig(
-                lora_alpha=16,
-                lora_dropout=0.1,
-                r=64,
-                bias="lora_only",
-                target_modules='all-linear',
-            )
-            self.student_ssl_model = inject_adapter_in_model(
-                adapter_config,
-                self.student_ssl_model,
-            )
-        else:
-            for param in self.student_ssl_model.parameters():
-                param.requires_grad = True
+        self.output_linear = torch.nn.Linear(self.student_ssl_model.config.hidden_size,
+                                             self.vae.bottleneck.cfg.latent_dim)
+        for param in self.student_ssl_model.parameters():
+            param.requires_grad = True
 
         self.ssl_model_criterion = torch.nn.MSELoss()
-        for param in self.teacher_ssl_model.parameters():
+        for param in self.vae.parameters():
             param.requires_grad = False
         self.pit = PermutationInvariantTraining(self.ssl_model_criterion,'speaker-wise','min')
 
@@ -241,7 +230,7 @@ class DialogueFeaturePredictorLightningModule(LightningModule):
 
         teacher_batch = _concat_batchenc(clean_inputs)
         with torch.inference_mode():
-            teacher_features = self.teacher_ssl_model(**teacher_batch).last_hidden_state
+            teacher_features,_,_,_ = self.vae.encode(teacher_batch)
 
         conditioning = (
             torch.arange(n_speakers, device=self.device)
@@ -253,6 +242,7 @@ class DialogueFeaturePredictorLightningModule(LightningModule):
         student_features = self.student_ssl_model(
             **noisy_batch, conditioning=conditioning
         ).last_hidden_state
+        student_features = self.output_linear(student_features)
 
         p = student_features.view(n_speakers, batch_size, *student_features.shape[1:]).float()
         t = teacher_features.view(n_speakers, batch_size, *teacher_features.shape[1:]).float()
@@ -270,26 +260,24 @@ class DialogueFeaturePredictorLightningModule(LightningModule):
         return ssl_loss, p, t
 
     def training_step(self, batch, batch_idx):
-        ssl_loss, predicted_features, target_features = self.step(batch, batch_idx, stage="train")
+        ssl_loss, predicted_features, target_features = self.step(batch, batch_idx, stage="train",log=True)
         return ssl_loss
 
     def validation_step(self, batch, batch_idx):
-        ssl_loss, predicted_features, target_features = self.step(batch, batch_idx, stage="val")
+        ssl_loss, predicted_features, target_features = self.step(batch, batch_idx, stage="val",log=True)
         if self.global_rank == 0 and batch_idx < 10:
-            vocoder_path = hf_hub_download("sarulab-speech/sidon-v0.1", filename="decoder_cuda.pt")
-            vocoder = torch.jit.load(vocoder_path,map_location='cuda').to('cuda')
             n_channels = predicted_features.shape[0]
-            predicted_wav = vocoder(predicted_features[:,0].transpose(1,2)).view(n_channels,-1)[:,:-960]
-            target_wav = vocoder(target_features[:,0].transpose(1,2)).view(n_channels,-1)[:,:-960]
+            predicted_wav = self.vae.decoder.forward(predicted_features[:,0].transpose(1,2)).view(n_channels,-1)
+            target_wav = self.vae.decoder.forward(target_features[:,0].transpose(1,2)).view(n_channels,-1)
             self.log_audio(
                 predicted_wav,
                 f'Predicted dialogue {batch_idx}',
-                48000
+                24000,
             )
             self.log_audio(
                 target_wav,
                 f'Resynthesized dialogue {batch_idx}',
-                48000
+                24000
             )
             self.log_audio(
                 batch['input_wav'][0],
@@ -775,106 +763,3 @@ class DialogueSidonLightningModule(LightningModule):
                     self.global_step,
                     sampling_rate,
                 )
-class CropSSLfeature(DialogueSidonLightningModule):
-
-    def step(
-        self, batch, batch_idx: int, stage: str = "train"
-    ) -> Tuple[torch.Tensor, audiotools.AudioSignal]:
-        wavs = batch["input_wav"][:,:,:] # only use first channel
-        batch_size = wavs.shape[0]
-        opt_g, opt_d = self.optimizers()  # type: ignore
-        sch_g, sch_d = self.lr_schedulers()  # type: ignore
-        with torch.inference_mode():
-            ssl_loss, predicted, target = self.feature_predictor.step(batch, batch_idx, stage="val",log=False)
-
-        predicted = self._align_predicted_speakers(predicted, target, stage)
-
-        input_features = torch.cat(
-            [
-                predicted[0].detach().transpose(1, 2),
-                predicted[1].detach().transpose(1, 2),
-            ],
-            dim=1,
-        )
-        predicted_clean_wavs = self.decoder.forward(input_features)
-        if abs(predicted_clean_wavs.shape[-1] - wavs.shape[-1]) > 480:
-            raise ValueError("Predicted waveform length deviates too much from target")
-        min_length = min(predicted_clean_wavs.shape[-1], wavs.shape[-1])
-        predicted_clean_wavs = predicted_clean_wavs[:, :, :min_length]
-        wavs = wavs[:, :, :min_length]
-
-        predicted_clean_wavs = audiotools.AudioSignal(
-            predicted_clean_wavs.view(batch_size, 2, -1),
-            sample_rate=self.cfg.sample_rate,
-        )
-        wavs = audiotools.AudioSignal(
-            wavs.view(batch_size, 2, -1), sample_rate=self.cfg.sample_rate
-        )
-        speech_mask, voiced_ratio = self._compute_voice_mask(wavs.audio_data)
-        speech_mask = speech_mask.detach()
-        self.log(
-            f"{stage}/voiced_ratio",
-            voiced_ratio.detach(),
-            on_step=stage == "train",
-            on_epoch=True,
-            prog_bar=stage == "train",
-        )
-        masked_predicted = audiotools.AudioSignal(
-            predicted_clean_wavs.audio_data * speech_mask,
-            sample_rate=self.cfg.sample_rate,
-        )
-        masked_target = audiotools.AudioSignal(
-            wavs.audio_data * speech_mask,
-            sample_rate=self.cfg.sample_rate,
-        )
-        regression_loss = self.regression_loss(masked_target, masked_predicted)["mel_loss"]
-
-        discriminator_loss = self.discriminator.discriminator_loss(
-            masked_predicted.audio_data.detach()[:,None,0],
-            masked_target.audio_data[:,None,0],
-        ) + self.discriminator.discriminator_loss(
-            masked_predicted.audio_data.detach()[:,None,1],
-            masked_target.audio_data[:,None,1],
-        )
-        if stage == "train":
-            opt_d.zero_grad()
-            self.manual_backward(discriminator_loss)  # type: ignore
-            torch.nn.utils.clip_grad_norm_(self.parameters(), 1.0)
-            opt_d.step()
-            sch_d.step()  # type: ignore
-        adv_gen_0, adv_feature_0 = self.discriminator.generator_loss(
-            masked_predicted.audio_data[:,None,0],
-            masked_target.audio_data[:,None,0],
-        )
-        adv_gen_1, adv_feature_1 = self.discriminator.generator_loss(
-            masked_predicted.audio_data[:,None,1],
-            masked_target.audio_data[:,None,1],
-        )
-        adv_gen = adv_gen_0 + adv_gen_1
-        adv_feature = adv_feature_0 + adv_feature_1
-
-        self.log(
-            f"{stage}/regression_loss", regression_loss, on_step=True, on_epoch=True
-        )
-        self.log(
-            f"{stage}/discriminator_loss",
-            discriminator_loss,
-            on_step=True,
-            on_epoch=True,
-        )
-        self.log(f"{stage}/adv_gen", adv_gen, on_step=stage == "train", on_epoch=True)
-        self.log(
-            f"{stage}/adv_feature", adv_feature, on_step=stage == "train", on_epoch=True
-        )
-        total_loss = (
-            self.cfg.loss.loss_weight["regression_loss"] * regression_loss
-            + self.cfg.loss.loss_weight["adv_gen"] * adv_gen
-            + self.cfg.loss.loss_weight["adv_feature"] * adv_feature
-        )
-        self.log(f"{stage}/total_loss", total_loss)
-        if stage == "train":
-            opt_g.zero_grad()
-            self.manual_backward(total_loss)
-            torch.nn.utils.clip_grad_norm_(self.parameters(), 1.0)
-            opt_g.step()
-            sch_g.step()  # type: ignore

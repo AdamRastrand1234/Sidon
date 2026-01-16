@@ -1,5 +1,5 @@
 #!/bin/bash
-#PBS -q debug-g
+#PBS -q regular-g
 #PBS -l select=16
 #PBS -W group_list=gj18
 #PBS -j oe
@@ -34,9 +34,8 @@ module () {
         fi
 }
 set -euo pipefail
-module purge
+module unload nvidia
 module load gcc
-module load ompi
 
 cd "${PBS_O_WORKDIR:-$(pwd)}"
 
@@ -70,11 +69,10 @@ mpirun  \
      -np $num_procs -map-by ppr:$num_gpus:node -hostfile $PBS_NODEFILE \
     .venv/bin/python src/sidon/train.py \
   data=dialogue_preprocessed \
-  data.datamodule.batch_size=8 \
-  model=dialogue_sidon_feature_predictor \
+  data.datamodule.batch_size=16 \
+  model=dialogue_flow_feature_predictor \
   train=default \
-  train.trainer.gradient_clip_val=1.0 \
+  train.trainer.gradient_clip_val=null \
   train.trainer.precision=bf16-mixed \
   hydra.run.dir=./sidon_runs/${PBS_JOBID} \
   +train.trainer.num_nodes=$num_nodes +train.trainer.devices=$num_gpus \
-#  'train.ckpt_path="/work/gj18/e43001/github.com/Sidon/sidon/wvcbo1ox/checkpoints/epoch=1-step=247668.ckpt"'

@@ -34,12 +34,12 @@ module () {
         fi
 }
 set -euo pipefail
-module purge
+module unload nvidia
 module load gcc
-module load ompi
 
 cd "${PBS_O_WORKDIR:-$(pwd)}"
 
+export NCCL_SOCKET_IFNAME="ibP2s2"
 export PATH="/work/gj18/e43001/miniconda3/bin/:$PATH"
 export LD_LIBRARY_PATH="/work/gj18/e43001/miniconda3/lib/"
 export MAIN_ADDR="$(hostname)"
@@ -66,15 +66,17 @@ mpirun  \
     -x MAIN_ADDR \
     -x MAIN_PORT \
     -x HYDRA_FULL_ERROR \
+    -x NCCL_SOCKET_IFNAME \
     -bind-to none \
      -np $num_procs -map-by ppr:$num_gpus:node -hostfile $PBS_NODEFILE \
     .venv/bin/python src/sidon/train.py \
   data=dialogue_preprocessed \
-  data.datamodule.batch_size=8 \
-  model=dialogue_sidon_feature_predictor \
+  data.datamodule.batch_size=4 \
+  model=ssl_vae \
   train=default \
-  train.trainer.gradient_clip_val=1.0 \
+  train.trainer.gradient_clip_val=null \
   train.trainer.precision=bf16-mixed \
   hydra.run.dir=./sidon_runs/${PBS_JOBID} \
   +train.trainer.num_nodes=$num_nodes +train.trainer.devices=$num_gpus \
-#  'train.ckpt_path="/work/gj18/e43001/github.com/Sidon/sidon/wvcbo1ox/checkpoints/epoch=1-step=247668.ckpt"'
+  model.cfg.vae.latent_dim=32
+  #'+train.ckpt_path="/work/gj18/e43001/github.com/Sidon/sidon/37k8emg5/checkpoints/epoch=0-step=1000000.ckpt"'
