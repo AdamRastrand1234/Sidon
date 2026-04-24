@@ -1,5 +1,5 @@
 # Sidon
-[![ArXiv](https://img.shields.io/badge/arXiv-coming%20soon-b31b1b.svg)](https://arxiv.org/abs/TODO)
+[![ArXiv](https://img.shields.io/badge/arXiv-2604.09344-b31b1b.svg)](https://arxiv.org/abs/2604.09344v2)
 [![Gradio Demo](https://img.shields.io/badge/Gradio-demo-orange.svg)](https://huggingface.co/spaces/sarulab-speech/sidon_demo_beta)
 [![Hugging Face](https://img.shields.io/badge/Hugging%20Face-demo)](https://huggingface.co/spaces/Wataru/SidonSamples)
 
@@ -123,6 +123,88 @@ Sidon training runs in three sequential stages. Every invocation of
 
 Adjust optimiser, scheduler, or trainer parameters via the files in
 `config/model/` and `config/train/`, and use `train.ckpt_path` to resume a run.
+
+## DialogueSidon — diffusion-based dialogue separation
+
+The `dialogue` branch extends Sidon with **DialogueSidon**, a diffusion
+separator that reconstructs two speakers from a mixed dialogue recording. It
+reuses the Sidon feature backbone and couples it with a diffusion transformer
+head that operates in the latent space of a frozen SSL-VAE.
+
+### Architecture
+
+- **SSL encoder** — a LoRA-adapted `facebook/w2v-bert-2.0` student encodes the
+  noisy mixture into frame-level features.
+- **SSL-VAE** — a pretrained `SSLVAE` (loaded from `cfg.vae_checkpoint_path`)
+  provides the target latents; its weights are frozen during training.
+- **Conditioning heads** — two linear projections (`output_linear1`,
+  `output_linear2`) map SSL features to per-speaker VAE latents used as a
+  conditioning signal.
+- **Diffusion transformer head** — a DiT with AdaLN conditioning, RoPE
+  attention, and sinusoidal timestep embeddings predicts the noise (or `v`
+  target) for the concatenated two-speaker latents.
+- **DDPM training** — noise is sampled with a `DDPMScheduler`
+  (`prediction_type=v_prediction` by default, 1000 training timesteps). Speaker
+  assignment is resolved with Permutation-Invariant Training on the
+  conditioning heads.
+- **Latent normalisation** — running mean/std buffers are initialised from the
+  first training batch and re-used at inference to stabilise diffusion.
+
+The matching inference script is `infer.py` (not `infer_geneses.py`, which is
+reserved for the flow-matching GENESES separator).
+
+### Model variants
+
+Available under `config/model/`:
+
+| Config | Head hidden | Head layers | Heads | Notes |
+|---|---|---|---|---|
+| `diffusion_dialogue_sidon` | 768 | 8 | 12 | default |
+| `diffusion_dialogue_sidon_small` | 384 | 12 | 6 | small |
+| `diffusion_dialogue_sidon_xsmall` | 384 | 6 | 6 | xsmall |
+| `diffusion_dialogue_sidon_ac` | 768 | 8 | 12 | activation checkpointing |
+| `diffusion_dialogue_sidon_wo_diffusion_head` | — | — | — | baseline without diffusion head |
+| `diffusion_dialogue_sidon_wo_vae_latent` | 768 | 8 | 12 | ablation without VAE latent conditioning |
+| `diffusion_dialogue_sidon_decoder_finetune` | — | — | — | decoder finetuning stage |
+
+### Training
+
+```bash
+uv run python -m sidon.train \
+  model=diffusion_dialogue_sidon \
+  data=dialogue_preprocessed
+```
+
+PBS templates for each variant are provided in
+`scripts/pbs/diffusion_dialogue_sidon*.sh`.
+
+### Inference
+
+`infer.py` runs chunked inference with overlap, resolves speaker permutation
+across chunks by cosine similarity in VAE latent space, concatenates the
+per-chunk latents, and performs a single VAE decode at the end.
+
+```bash
+# Batch mode — directory of wav files
+python infer.py \
+  --checkpoint sidon/<run_id> \
+  --input-dir ./wavs \
+  --output-dir ./out \
+  --device cuda:0 \
+  --num-steps 30 \
+  --chunk-seconds 20 \
+  --overlap-seconds 5
+
+# Single audio or video file (replaces the audio track when given a video)
+python infer.py \
+  --checkpoint sidon/<run_id> \
+  --input-video input.mp4 \
+  --output-wav separated.wav \
+  --output-video output.mp4
+```
+
+Use `scripts/pbs/infer_dialogue.sh` to submit the same job on an `rt_QG` (single
+GPU) PBS queue.
 
 ## Validation and troubleshooting
 
