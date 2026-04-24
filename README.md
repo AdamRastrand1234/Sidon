@@ -1,7 +1,8 @@
 # Sidon
 [![Sidon arXiv](https://img.shields.io/badge/Sidon-arXiv%202509.17052-b31b1b.svg)](https://arxiv.org/abs/2509.17052)
 [![DialogueSidon arXiv](https://img.shields.io/badge/DialogueSidon-arXiv%202604.09344-b31b1b.svg)](https://arxiv.org/abs/2604.09344)
-[![Gradio Demo](https://img.shields.io/badge/Gradio-demo-orange.svg)](https://huggingface.co/spaces/sarulab-speech/sidon_demo_beta)
+[![Sidon Gradio Demo](https://img.shields.io/badge/Sidon-Gradio%20demo-orange.svg)](https://huggingface.co/spaces/sarulab-speech/sidon_demo_beta)
+[![DialogueSidon Gradio Demo](https://img.shields.io/badge/DialogueSidon-Gradio%20demo-orange.svg)](https://huggingface.co/spaces/sarulab-speech/DialogueSidon-demo)
 [![Hugging Face](https://img.shields.io/badge/Hugging%20Face-demo)](https://huggingface.co/spaces/Wataru/SidonSamples)
 
 
