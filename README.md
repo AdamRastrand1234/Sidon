@@ -178,11 +178,28 @@ Available under `config/model/`:
 
 ### Training
 
-```bash
-uv run python -m sidon.train \
-  model=diffusion_dialogue_sidon \
-  data=dialogue_preprocessed
-```
+DialogueSidon requires a pretrained **SSL-VAE** checkpoint. Train it first
+with `model=ssl_vae`, then pass the resulting checkpoint into the diffusion
+run via `model.cfg.vae_checkpoint_path`.
+
+1. **SSL-VAE pretraining** — learns the latent space that the diffusion head
+   will predict over.
+
+   ```bash
+   uv run python -m sidon.train \
+     model=ssl_vae \
+     data=dialogue_preprocessed
+   ```
+
+2. **Diffusion training** — point `model.cfg.vae_checkpoint_path` at the
+   SSL-VAE checkpoint from step 1.
+
+   ```bash
+   uv run python -m sidon.train \
+     model=diffusion_dialogue_sidon \
+     data=dialogue_preprocessed \
+     model.cfg.vae_checkpoint_path=/path/to/ssl_vae.ckpt
+   ```
 
 PBS templates for each variant are provided in
 `scripts/pbs/diffusion_dialogue_sidon*.sh`.
