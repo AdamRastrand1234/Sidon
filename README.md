@@ -136,10 +136,11 @@ Adjust optimiser, scheduler, or trainer parameters via the files in
 
 ## DialogueSidon — diffusion-based dialogue separation
 
-The `dialogue` branch extends Sidon with **DialogueSidon**, a diffusion
-separator that reconstructs two speakers from a mixed dialogue recording. It
-reuses the Sidon feature backbone and couples it with a diffusion transformer
-head that operates in the latent space of a frozen SSL-VAE.
+Full-duplex dialogue audio, in which each speaker is recorded on a separate track, is an important resource for spoken dialogue research, but is difficult to collect at scale. Most in-the-wild two-speaker dialogue is available only as degraded monaural mixtures, making it unsuitable for systems requiring clean speaker-wise signals. We propose DialogueSidon, a model for joint restoration and separation of degraded monaural two-speaker dialogue audio. DialogueSidon combines a variational autoencoder (VAE) operates on the speech self-supervised learning (SSL) model feature, which compresses SSL model features into a compact latent space, with a diffusion-based latent predictor that recovers speaker-wise latent representations from the degraded mixture. Experiments on English, multilingual, and in-the-wild dialogue datasets show that DialogueSidon substantially improves intelligibility and separation quality over a baseline, while also achieving much faster inference.
+
+This repository implements DialogueSidon on top of the Sidon feature backbone:
+a diffusion transformer head predicts per-speaker latents over a frozen
+SSL-VAE, conditioned on features from a LoRA-adapted w2v-BERT encoder.
 
 ### Architecture
 
