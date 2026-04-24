@@ -1,5 +1,6 @@
 # Sidon
-[![ArXiv](https://img.shields.io/badge/arXiv-2604.09344-b31b1b.svg)](https://arxiv.org/abs/2604.09344v2)
+[![Sidon arXiv](https://img.shields.io/badge/Sidon-arXiv%202509.17052-b31b1b.svg)](https://arxiv.org/abs/2509.17052)
+[![DialogueSidon arXiv](https://img.shields.io/badge/DialogueSidon-arXiv%202604.09344-b31b1b.svg)](https://arxiv.org/abs/2604.09344)
 [![Gradio Demo](https://img.shields.io/badge/Gradio-demo-orange.svg)](https://huggingface.co/spaces/sarulab-speech/sidon_demo_beta)
 [![Hugging Face](https://img.shields.io/badge/Hugging%20Face-demo)](https://huggingface.co/spaces/Wataru/SidonSamples)
 
@@ -7,6 +8,14 @@
 Large-scale text-to-speech (TTS) systems are bottlenecked by the scarcity of clean, multilingual recordings. Sidon tackles this by pairing a fast, open-source speech restoration model with reproducible tooling so researchers can turn noisy in-the-wild corpora into studio-quality datasets that scale across dozens of languages.
 
 Sidon consists of two stages: a w2v-BERT 2.0 feature predictor finetuned to cleanse representations from degraded speech, and a vocoder trained to synthesise restored waveforms from those features. The stack achieves restoration quality comparable to Miipher—Google's internal speech restoration pipeline—while running up to 3,390× faster than real time on a single GPU. We also observe that training downstream TTS models on Sidon-cleansed automatic speech recognition corpora improves zero-shot synthesis quality. This repository releases the code, configs, and models needed to reproduce Sidon's dataset cleansing workflow for the community.
+
+This repository ships two models:
+
+- **Sidon** ([arXiv:2509.17052](https://arxiv.org/abs/2509.17052)) — the
+  single-speaker speech restoration pipeline described above.
+- **DialogueSidon** ([arXiv:2604.09344](https://arxiv.org/abs/2604.09344)) — a
+  diffusion-based two-speaker dialogue separator that reuses the Sidon
+  backbone. See the [DialogueSidon section](#dialoguesidon--diffusion-based-dialogue-separation).
 
 ## Requirements
 
