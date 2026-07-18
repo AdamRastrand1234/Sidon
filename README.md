@@ -1,245 +1,86 @@
-# Sidon
-[![Sidon arXiv](https://img.shields.io/badge/Sidon-arXiv%202509.17052-b31b1b.svg)](https://arxiv.org/abs/2509.17052)
-[![DialogueSidon arXiv](https://img.shields.io/badge/DialogueSidon-arXiv%202604.09344-b31b1b.svg)](https://arxiv.org/abs/2604.09344)
-[![Sidon Gradio Demo](https://img.shields.io/badge/Sidon-Gradio%20demo-orange.svg)](https://huggingface.co/spaces/sarulab-speech/sidon_demo_beta)
-[![DialogueSidon Gradio Demo](https://img.shields.io/badge/DialogueSidon-Gradio%20demo-orange.svg)](https://huggingface.co/spaces/sarulab-speech/DialogueSidon-demo)
-[![Hugging Face](https://img.shields.io/badge/Hugging%20Face-demo)](https://huggingface.co/spaces/Wataru/SidonSamples)
+# Sidon Speech Enhancement WebUI
 
-
-Large-scale text-to-speech (TTS) systems are bottlenecked by the scarcity of clean, multilingual recordings. Sidon tackles this by pairing a fast, open-source speech restoration model with reproducible tooling so researchers can turn noisy in-the-wild corpora into studio-quality datasets that scale across dozens of languages.
-
-Sidon consists of two stages: a w2v-BERT 2.0 feature predictor finetuned to cleanse representations from degraded speech, and a vocoder trained to synthesise restored waveforms from those features. The stack achieves restoration quality comparable to Miipher—Google's internal speech restoration pipeline—while running up to 500× faster than real time on a single GPU. We also observe that training downstream TTS models on Sidon-cleansed automatic speech recognition corpora improves zero-shot synthesis quality. This repository releases the code, configs, and models needed to reproduce Sidon's dataset cleansing workflow for the community.
-
-This repository ships two models:
-
-- **Sidon** ([arXiv:2509.17052](https://arxiv.org/abs/2509.17052)) — the
-  single-speaker speech restoration pipeline described above.
-- **DialogueSidon** ([arXiv:2604.09344](https://arxiv.org/abs/2604.09344)) — a
-  diffusion-based two-speaker dialogue separator that reuses the Sidon
-  backbone. See the [DialogueSidon section](#dialoguesidon--diffusion-based-dialogue-separation).
+An inference-only Windows WebUI for restoring noisy or degraded speech with
+[SaruLab's Sidon v0.1 model](https://huggingface.co/sarulab-speech/sidon-v0.1).
+Training, dataset preparation, cluster scripts, and experiment dependencies
+have been removed from this fork.
 
 ## Requirements
 
-- Python 3.10+
-- Recent PyTorch / CUDA stack (tested with `torch>=2.8`, `torchaudio>=2.8`)
-- `uv` for dependency management (or an equivalent toolchain you are
-  comfortable with)
+- Windows 10 or 11
+- NVIDIA GPU with at least 4 GB VRAM (8 GB or more recommended)
+- Current NVIDIA driver
+- 64-bit Python 3.10 or 3.11
+- Internet access for installation and the first model download
 
-Install project dependencies:
+The target configuration is an RTX 4060 with 8 GB VRAM and 16 GB system RAM.
 
-```bash
-uv sync
+## Install and run
+
+1. Double-click `install.bat` once.
+2. Double-click `run.bat`.
+3. Your browser opens at <http://127.0.0.1:7860>.
+4. Upload an audio file and click **Enhance Speech**.
+
+The first start downloads the two official CUDA model files (about 1 GB total)
+to `model_cache/`. `run.bat` waits until both models are loaded on CUDA before
+opening the browser, so the first **Enhance Speech** click can begin immediately.
+Later starts reuse the local cache.
+
+Enhanced 48 kHz WAV files are saved in `outputs/` and can also be downloaded
+from the audio player.
+
+## Accessibility
+
+The main workflow is keyboard-friendly and keeps technical chunk controls
+inside the closed optional settings panel. CUDA readiness and processing
+updates use screen-reader live regions, the visible percentage is exposed as a
+semantic progress bar, errors use alert announcements, and Clear/Cancel restore
+an unambiguous status.
+
+## VRAM-aware chunks
+
+Automatic chunk sizing is enabled by default. Lower-VRAM GPUs use shorter
+chunks; larger GPUs use longer chunks. An 8 GB GPU starts at 60 seconds.
+Available free VRAM is considered as well, so other GPU applications can lower
+the recommendation.
+
+**This is not an upload-duration limit.** A recording can be much longer than
+60 seconds. Sidon automatically processes it as multiple internal chunks and
+returns one complete enhanced WAV file.
+
+If a chunk still causes a CUDA out-of-memory error, Sidon clears the failed
+allocation, halves the chunk length, and retries. This recovery can be disabled
+under **Advanced settings**. Manual chunk lengths from 4 to 96 seconds are also
+available there.
+
+## Advanced settings
+
+- **Automatic internal chunk length from VRAM**: recommended for stable
+  operation; it does not limit total file length.
+- **Internal processing chunk length**: used only when automatic mode is
+  disabled. Longer recordings are split automatically.
+- **High-pass filter**: 50 Hz removes low-frequency rumble; 0 disables it.
+- **Input normalization peak**: controls pre-model peak normalization.
+- **CUDA out-of-memory recovery**: retries safely with smaller chunks.
+
+The model always runs on `cuda:0`; CPU fallback is intentionally disabled.
+
+## Command-line start options
+
+`run.bat` is the normal start method. To change the bind address or port:
+
+```bat
+set SIDON_SERVER_NAME=0.0.0.0
+set SIDON_SERVER_PORT=7861
+.venv\Scripts\python.exe app.py
 ```
 
-If you rely on a different environment manager, replicate the dependencies
-listed in `pyproject.toml`.
+Do not expose the WebUI directly to the internet without authentication.
 
-## Repository layout
+## Model and license
 
-- `src/sidon/model/sidon/lightning_module.py` — Feature predictor, decoder, and
-  discriminator Lightning modules.
-- `src/sidon/data` — WebDataset helpers, preprocessing augmentations, and the
-  `PreprocessedDataModule` used for training.
-- `src/sidon/preprocess.py` — Parallel writer that turns augmented samples into
-  on-disk shards.
-- `config/` — Hydra configuration tree with defaults for preprocessing, data,
-  models, and trainer settings.
-- `scripts/` — Utility scripts plus PBS job templates for batch processing.
-
-## Preparing data
-
-Training consumes WebDataset shards that contain tensors expected by the
-`PreprocessedDataModule`:
-
-- `input_wav.pth` and `noisy_input_wav.pth` — paired clean / degraded waveforms
-  stored as 1D float tensors.
-- Optional SSL features (`ssl_inputs.pickle`, `noisy_ssl_inputs.pickle`) that
-  provide contextual embeddings for the model.
-- `sr.index` and other metadata entries produced by the preprocessing pipeline.
-
-Update `config/data/preprocessed.yaml` with the locations of your prepared
-shards. You can point the `train_urls` and `val_urls` entries at directories of
-`.tar` / `.tar.gz` files, or text manifests containing S3 URIs. Set `is_s3=true` to stream from object storage via the AWS CLI.
-
-## Generating preprocessed shards
-
-Use the Hydra-driven preprocessing entrypoint to convert raw WebDataset
-collections into the tensorised format described above.
-
-1. Choose the base configuration in `config/preprocess.yaml` (e.g.
-   `webdataset_preprocess_24k` or `webdataset_preprocess_48k`). These configs
-   reference the augmentation pipeline, SSL encoders, and noise sources defined
-   in `config/data/webdataset_preprocess_*.yaml`.
-2. Set output parameters in `config/preprocess/default.yaml` (target directory,
-   shard size, number of writer processes).
-3. Launch preprocessing locally:
-
-   ```bash
-   uv run python -m sidon.preprocess \
-     data=webdataset_preprocess_24k \
-     preprocess.writer_name=my_preprocessed_run
-   ```
-
-   Hydra creates run-specific subdirectories under `outputs/` and writes shards
-   into `${preprocess.output_root}/{writer_name}/{split}/{job_id}`.
-4. On PBS-based clusters, adapt the templates in `scripts/pbs/` (e.g.
-   `preprocess_24k.sh`) to submit distributed jobs. The scripts activate a local
-   virtual environment, set MPI-friendly environment variables, and forward
-   Hydra overrides to the preprocessing entrypoint.
-
-Utilities such as `scripts/summarise_shard_durations.py` can help audit the
-duration distribution of generated shards before training.
-
-## Training pipeline
-
-Sidon training runs in three sequential stages. Every invocation of
-`python -m sidon.train` resolves a Hydra config and writes artefacts under
-`outputs/<timestamped_run>/`.
-
-1. **Feature predictor pretraining** — LoRA-adapts the SSL encoder to denoise
-   representations before they are fed to the vocoder.
-
-   ```bash
-   uv run python -m sidon.train \
-     model=sidon_feature_predictor \
-     data=preprocessed
-   ```
-
-   The resulting checkpoint (e.g. `outputs/<run>/checkpoints/last.ckpt`) becomes
-   the `model.cfg.ssl_model_name` input for the finetuning stage.
-
-2. **Vocoder pretraining** — Trains the decoder and discriminator while the SSL
-   encoder remains frozen on clean features.
-
-   ```bash
-   uv run python -m sidon.train \
-     model=sidon_vocoder_pretrain \
-     data=preprocessed
-   ```
-
-   Capture the checkpoint path; it will be referenced as `model.cfg.pretrain_path`
-   during finetuning.
-
-3. **Vocoder finetuning** — Warm-starts from the pretraining weights and swaps
-   in the denoised SSL features predicted by the feature predictor.
-
-   ```bash
-   uv run python -m sidon.train \
-     model=sidon_vocoder_finetune \
-     data=preprocessed_48k \
-     model.cfg.ssl_model_name=/path/to/feature_predictor.ckpt \
-     model.cfg.pretrain_path=/path/to/vocoder_pretrain.ckpt
-   ```
-
-Adjust optimiser, scheduler, or trainer parameters via the files in
-`config/model/` and `config/train/`, and use `train.ckpt_path` to resume a run.
-
-## DialogueSidon — diffusion-based dialogue separation
-
-Full-duplex dialogue audio, in which each speaker is recorded on a separate track, is an important resource for spoken dialogue research, but is difficult to collect at scale. Most in-the-wild two-speaker dialogue is available only as degraded monaural mixtures, making it unsuitable for systems requiring clean speaker-wise signals. We propose DialogueSidon, a model for joint restoration and separation of degraded monaural two-speaker dialogue audio. DialogueSidon combines a variational autoencoder (VAE) operates on the speech self-supervised learning (SSL) model feature, which compresses SSL model features into a compact latent space, with a diffusion-based latent predictor that recovers speaker-wise latent representations from the degraded mixture. Experiments on English, multilingual, and in-the-wild dialogue datasets show that DialogueSidon substantially improves intelligibility and separation quality over a baseline, while also achieving much faster inference.
-
-This repository implements DialogueSidon on top of the Sidon feature backbone:
-a diffusion transformer head predicts per-speaker latents over a frozen
-SSL-VAE, conditioned on features from a LoRA-adapted w2v-BERT encoder.
-
-### Architecture
-
-- **SSL encoder** — a LoRA-adapted `facebook/w2v-bert-2.0` student encodes the
-  noisy mixture into frame-level features.
-- **SSL-VAE** — a pretrained `SSLVAE` (loaded from `cfg.vae_checkpoint_path`)
-  provides the target latents; its weights are frozen during training.
-- **Conditioning heads** — two linear projections (`output_linear1`,
-  `output_linear2`) map SSL features to per-speaker VAE latents used as a
-  conditioning signal.
-- **Diffusion transformer head** — a DiT with AdaLN conditioning, RoPE
-  attention, and sinusoidal timestep embeddings predicts the noise (or `v`
-  target) for the concatenated two-speaker latents.
-- **DDPM training** — noise is sampled with a `DDPMScheduler`
-  (`prediction_type=v_prediction` by default, 1000 training timesteps). Speaker
-  assignment is resolved with Permutation-Invariant Training on the
-  conditioning heads.
-- **Latent normalisation** — running mean/std buffers are initialised from the
-  first training batch and re-used at inference to stabilise diffusion.
-
-The matching inference script is `infer.py` (not `infer_geneses.py`, which is
-reserved for the flow-matching GENESES separator).
-
-### Model variants
-
-Available under `config/model/`:
-
-| Config | Head hidden | Head layers | Heads | Notes |
-|---|---|---|---|---|
-| `diffusion_dialogue_sidon` | 768 | 8 | 12 | default |
-| `diffusion_dialogue_sidon_small` | 384 | 12 | 6 | small |
-| `diffusion_dialogue_sidon_xsmall` | 384 | 6 | 6 | xsmall |
-| `diffusion_dialogue_sidon_ac` | 768 | 8 | 12 | activation checkpointing |
-| `diffusion_dialogue_sidon_wo_diffusion_head` | — | — | — | baseline without diffusion head |
-| `diffusion_dialogue_sidon_wo_vae_latent` | 768 | 8 | 12 | ablation without VAE latent conditioning |
-| `diffusion_dialogue_sidon_decoder_finetune` | — | — | — | decoder finetuning stage |
-
-### Training
-
-DialogueSidon requires a pretrained **SSL-VAE** checkpoint. Train it first
-with `model=ssl_vae`, then pass the resulting checkpoint into the diffusion
-run via `model.cfg.vae_checkpoint_path`.
-
-1. **SSL-VAE pretraining** — learns the latent space that the diffusion head
-   will predict over.
-
-   ```bash
-   uv run python -m sidon.train \
-     model=ssl_vae \
-     data=dialogue_preprocessed
-   ```
-
-2. **Diffusion training** — point `model.cfg.vae_checkpoint_path` at the
-   SSL-VAE checkpoint from step 1.
-
-   ```bash
-   uv run python -m sidon.train \
-     model=diffusion_dialogue_sidon \
-     data=dialogue_preprocessed \
-     model.cfg.vae_checkpoint_path=/path/to/ssl_vae.ckpt
-   ```
-
-PBS templates for each variant are provided in
-`scripts/pbs/diffusion_dialogue_sidon*.sh`.
-
-### Inference
-
-`infer.py` runs chunked inference with overlap, resolves speaker permutation
-across chunks by cosine similarity in VAE latent space, concatenates the
-per-chunk latents, and performs a single VAE decode at the end.
-
-```bash
-# Batch mode — directory of wav files
-python infer.py \
-  --checkpoint sidon/<run_id> \
-  --input-dir ./wavs \
-  --output-dir ./out \
-  --device cuda:0 \
-  --num-steps 30 \
-  --chunk-seconds 20 \
-  --overlap-seconds 5
-
-# Single audio or video file (replaces the audio track when given a video)
-python infer.py \
-  --checkpoint sidon/<run_id> \
-  --input-video input.mp4 \
-  --output-wav separated.wav \
-  --output-video output.mp4
-```
-
-Use `scripts/pbs/infer_dialogue.sh` to submit the same job on an `rt_QG` (single
-GPU) PBS queue.
-
-## Validation and troubleshooting
-
-- Perform a quick syntax sweep with `python -m compileall src` before submitting
-  jobs.
-- Ensure CUDA kernels are available and match the Torch build; most sidon
-  experiments assume a GPU-backed environment.
-- If streaming from S3, check that the AWS CLI is installed and accessible in
-  your job environment.
-- The stack is ported from an internal codebase and only partially smoke-checked; if something breaks, please open an issue with details so we can follow up.
+The WebUI downloads model artifacts from
+[`sarulab-speech/sidon-v0.1`](https://huggingface.co/sarulab-speech/sidon-v0.1).
+See the upstream repository and model page for their respective license terms
+and attribution.

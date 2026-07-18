@@ -217,3 +217,6 @@ sidon_runs/
 *.wav
 *.mp4
 exported/
+model_cache/
+outputs/
+tests/artifacts/

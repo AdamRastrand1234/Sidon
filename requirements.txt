@@ -1,0 +1,4 @@
+gradio>=5.44,<6
+huggingface_hub>=0.34,<2
+numpy>=1.26,<3
+soundfile>=0.12,<1
