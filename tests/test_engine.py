@@ -14,6 +14,7 @@ from sidon_engine import (
     SidonError,
     _extract_features,
     effective_free_vram_gb,
+    estimate_output_work_bytes,
     recommend_chunk_seconds,
 )
 
@@ -60,6 +61,41 @@ class EngineUnitTests(unittest.TestCase):
             waveform, sample_rate = SidonEngine._read_audio(path)
         self.assertEqual(sample_rate, 16_000)
         self.assertEqual(tuple(waveform.shape), (1, 16_000))
+
+    def test_two_hour_output_uses_bounded_working_disk_space(self) -> None:
+        two_hour_samples = 2 * 60 * 60 * 48_000
+        required_gib = estimate_output_work_bytes(two_hour_samples) / 1024**3
+        self.assertGreater(required_gib, 2.0)
+        self.assertLess(required_gib, 2.3)
+
+    def test_float_output_is_finalized_blockwise_with_clipping_protection(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            temp_path = root / "streamed.wav"
+            final_path = root / "final.wav"
+            audio = np.linspace(
+                -1.5,
+                1.5,
+                1_048_576 + 123,
+                dtype=np.float32,
+            )
+            sf.write(
+                str(temp_path),
+                audio,
+                48_000,
+                subtype="FLOAT",
+            )
+
+            SidonEngine._finalize_output(temp_path, final_path, output_peak=1.5)
+            finalized, sample_rate = sf.read(final_path, dtype="float32")
+            info = sf.info(final_path)
+
+        self.assertEqual(sample_rate, 48_000)
+        self.assertEqual(info.subtype, "PCM_16")
+        self.assertEqual(finalized.shape[0], audio.shape[0])
+        self.assertLessEqual(float(np.abs(finalized).max()), 0.991)
 
 
 if __name__ == "__main__":

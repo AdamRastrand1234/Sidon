@@ -49,6 +49,11 @@ the recommendation.
 60 seconds. Sidon automatically processes it as multiple internal chunks and
 returns one complete enhanced WAV file.
 
+Recordings around two hours are supported. Enhanced chunks are streamed to
+disk so the complete 48 kHz result does not accumulate in RAM. A two-hour
+recording needs about 2.2 GiB of free working disk space in addition to the
+uploaded source file; the WebUI checks this before GPU processing begins.
+
 If a chunk still causes a CUDA out-of-memory error, Sidon clears the failed
 allocation, halves the chunk length, and retries. This recovery can be disabled
 under **Advanced settings**. Manual chunk lengths from 4 to 96 seconds are also

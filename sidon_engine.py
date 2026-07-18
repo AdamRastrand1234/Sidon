@@ -13,6 +13,7 @@ import math
 import os
 from pathlib import Path
 import re
+import shutil
 import threading
 import time
 from typing import Generator
@@ -34,6 +35,8 @@ DEFAULT_END_PADDING_SECONDS = 1.5
 DECODER_FRAME_SAMPLES = 960
 MIN_CHUNK_SECONDS = 4.0
 MAX_CHUNK_SECONDS = 96.0
+OUTPUT_FINALIZE_BLOCK_SAMPLES = 1_048_576
+OUTPUT_DISK_SAFETY_BYTES = 256 * 1024**2
 
 
 class SidonError(RuntimeError):
@@ -212,6 +215,12 @@ def _safe_stem(path: str | Path) -> str:
     return stem[:80] or "audio"
 
 
+def estimate_output_work_bytes(target_samples: int) -> int:
+    """Estimate temporary float WAV plus final PCM-16 WAV disk usage."""
+    samples = max(0, int(target_samples))
+    return samples * (4 + 2) + OUTPUT_DISK_SAFETY_BYTES
+
+
 class SidonEngine:
     """Lazy-loading, single-GPU Sidon inference engine."""
 
@@ -348,57 +357,116 @@ class SidonEngine:
         chunk_seconds: float,
         feature_model: torch.jit.ScriptModule,
         decoder_model: torch.jit.ScriptModule,
-    ) -> Generator[ProgressUpdate, None, tuple[torch.Tensor, int]]:
+        temp_output_path: Path,
+        target_samples: int,
+    ) -> Generator[ProgressUpdate, None, tuple[int, float]]:
         chunk_samples = max(1, round(chunk_seconds * INPUT_SAMPLE_RATE))
         total_samples = waveform_16k.shape[-1]
         num_chunks = max(1, math.ceil(total_samples / chunk_samples))
-        restored_chunks: list[torch.Tensor] = []
         feature_cache: torch.Tensor | None = None
+        samples_written = 0
+        output_peak = 0.0
 
-        for index, start in enumerate(range(0, total_samples, chunk_samples), start=1):
-            end = min(start + chunk_samples, total_samples)
-            stage_start = 27 + round(64 * (index - 1) / num_chunks)
-            stage_mid = 27 + round(64 * (index - 0.5) / num_chunks)
-            stage_end = 27 + round(64 * index / num_chunks)
-            yield ProgressUpdate(
-                min(stage_start, 90),
-                f"Enhancing chunk {index}/{num_chunks}: extracting speech features...",
-            )
-
-            chunk = waveform_16k[0, start:end]
-            padded_chunk = torch.nn.functional.pad(chunk, (160, 160))
-            input_features = _extract_features(padded_chunk).to(
-                "cuda:0", non_blocking=True
-            )
-
-            with torch.inference_mode():
-                feature_output = feature_model(input_features)
-                if isinstance(feature_output, dict):
-                    features = feature_output["last_hidden_state"]
-                else:  # TorchScript dictionaries can expose __getitem__ only
-                    features = feature_output["last_hidden_state"]
-                if feature_cache is not None:
-                    features = torch.cat([feature_cache, features], dim=1)
-
+        with sf.SoundFile(
+            str(temp_output_path),
+            mode="w",
+            samplerate=OUTPUT_SAMPLE_RATE,
+            channels=1,
+            subtype="FLOAT",
+            format="WAV",
+        ) as temp_output:
+            for index, start in enumerate(
+                range(0, total_samples, chunk_samples), start=1
+            ):
+                end = min(start + chunk_samples, total_samples)
+                stage_start = 27 + round(64 * (index - 1) / num_chunks)
+                stage_mid = 27 + round(64 * (index - 0.5) / num_chunks)
+                stage_end = 27 + round(64 * index / num_chunks)
                 yield ProgressUpdate(
-                    min(stage_mid, 91),
-                    f"Enhancing chunk {index}/{num_chunks}: reconstructing 48 kHz speech...",
+                    min(stage_start, 90),
+                    f"Enhancing chunk {index}/{num_chunks}: extracting speech features...",
                 )
-                decoded = decoder_model(features.transpose(1, 2)).reshape(-1)
-                if decoded.numel() > DECODER_FRAME_SAMPLES:
-                    decoded = decoded[:-DECODER_FRAME_SAMPLES]
-                restored_chunks.append(decoded.float().cpu())
-                feature_cache = features[:, -1:, :].detach()
 
-            del input_features, feature_output, features, decoded
-            yield ProgressUpdate(
-                min(stage_end, 92),
-                f"Chunk {index}/{num_chunks} complete.",
-            )
+                chunk = waveform_16k[0, start:end]
+                padded_chunk = torch.nn.functional.pad(chunk, (160, 160))
+                input_features = _extract_features(padded_chunk).to(
+                    "cuda:0", non_blocking=True
+                )
 
-        if not restored_chunks:
+                with torch.inference_mode():
+                    feature_output = feature_model(input_features)
+                    if isinstance(feature_output, dict):
+                        features = feature_output["last_hidden_state"]
+                    else:  # TorchScript dictionaries can expose __getitem__ only
+                        features = feature_output["last_hidden_state"]
+                    if feature_cache is not None:
+                        features = torch.cat([feature_cache, features], dim=1)
+
+                    yield ProgressUpdate(
+                        min(stage_mid, 91),
+                        f"Enhancing chunk {index}/{num_chunks}: reconstructing 48 kHz speech...",
+                    )
+                    decoded = decoder_model(features.transpose(1, 2)).reshape(-1)
+                    if decoded.numel() > DECODER_FRAME_SAMPLES:
+                        decoded = decoded[:-DECODER_FRAME_SAMPLES]
+                    decoded_cpu = torch.nan_to_num(
+                        decoded.float().cpu(), nan=0.0, posinf=0.0, neginf=0.0
+                    )
+                    remaining = max(0, target_samples - samples_written)
+                    if remaining:
+                        decoded_cpu = decoded_cpu[:remaining]
+                        if decoded_cpu.numel():
+                            output_peak = max(
+                                output_peak, float(decoded_cpu.abs().max())
+                            )
+                            temp_output.write(decoded_cpu.numpy())
+                            samples_written += decoded_cpu.numel()
+                    feature_cache = features[:, -1:, :].detach()
+
+                del input_features, feature_output, features, decoded, decoded_cpu
+                yield ProgressUpdate(
+                    min(stage_end, 92),
+                    f"Chunk {index}/{num_chunks} complete.",
+                )
+
+            while samples_written < target_samples:
+                block_samples = min(
+                    OUTPUT_FINALIZE_BLOCK_SAMPLES, target_samples - samples_written
+                )
+                temp_output.write(np.zeros(block_samples, dtype=np.float32))
+                samples_written += block_samples
+
+        if samples_written == 0:
             raise SidonError("No enhanced audio was produced.")
-        return torch.cat(restored_chunks), num_chunks
+        return num_chunks, output_peak
+
+    @staticmethod
+    def _finalize_output(
+        temp_output_path: Path,
+        partial_output_path: Path,
+        output_peak: float,
+    ) -> None:
+        """Convert the streamed float result to PCM-16 without loading it all."""
+        scale = 0.99 / output_peak if output_peak > 0.99 else 1.0
+        with (
+            sf.SoundFile(str(temp_output_path), mode="r") as source,
+            sf.SoundFile(
+                str(partial_output_path),
+                mode="w",
+                samplerate=OUTPUT_SAMPLE_RATE,
+                channels=1,
+                subtype="PCM_16",
+                format="WAV",
+            ) as destination,
+        ):
+            for block in source.blocks(
+                blocksize=OUTPUT_FINALIZE_BLOCK_SAMPLES,
+                dtype="float32",
+                always_2d=False,
+            ):
+                if scale != 1.0:
+                    block *= scale
+                destination.write(block)
 
     def enhance(
         self,
@@ -427,6 +495,26 @@ class SidonEngine:
             )
             del waveform
 
+            output_dir = Path(output_dir)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            required_disk_bytes = estimate_output_work_bytes(target_samples)
+            free_disk_bytes = shutil.disk_usage(output_dir).free
+            if free_disk_bytes < required_disk_bytes:
+                required_gb = required_disk_bytes / 1024**3
+                free_gb = free_disk_bytes / 1024**3
+                raise SidonError(
+                    "Not enough free disk space for this audio. "
+                    f"About {required_gb:.1f} GB is needed, but only "
+                    f"{free_gb:.1f} GB is available."
+                )
+
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            output_path = (
+                output_dir / f"{_safe_stem(input_path)}_enhanced_{timestamp}.wav"
+            )
+            temp_output_path = output_dir / f".sidon_{timestamp}.float.wav"
+            partial_output_path = output_dir / f".sidon_{timestamp}.partial.wav"
+
             cuda = get_cuda_info()
             effective_free_gb = effective_free_vram_gb(cuda.free_gb)
             chunk_seconds = (
@@ -446,86 +534,83 @@ class SidonEngine:
 
             torch.cuda.reset_peak_memory_stats(0)
             retries = 0
-            while True:
-                try:
-                    restored, num_chunks = yield from self._run_chunks(
-                        waveform_16k,
-                        chunk_seconds,
-                        feature_model,
-                        decoder_model,
-                    )
-                    break
-                except Exception as exc:
-                    if not _is_cuda_oom(exc):
-                        raise
-                    del exc
-                    torch.cuda.empty_cache()
-                    if not options.oom_recovery or chunk_seconds <= MIN_CHUNK_SECONDS:
-                        raise SidonError(
-                            "CUDA ran out of memory even at the minimum chunk "
-                            "length. Close other GPU applications and try again."
+            try:
+                while True:
+                    temp_output_path.unlink(missing_ok=True)
+                    try:
+                        num_chunks, output_peak = yield from self._run_chunks(
+                            waveform_16k,
+                            chunk_seconds,
+                            feature_model,
+                            decoder_model,
+                            temp_output_path,
+                            target_samples,
                         )
-                    retries += 1
-                    new_chunk_seconds = max(
-                        MIN_CHUNK_SECONDS,
-                        float(max(1, math.floor(chunk_seconds / 2))),
-                    )
-                    if new_chunk_seconds >= chunk_seconds:
-                        new_chunk_seconds = MIN_CHUNK_SECONDS
-                    chunk_seconds = new_chunk_seconds
-                    yield ProgressUpdate(
-                        26,
-                        "CUDA memory was insufficient; safely retrying with "
-                        f"{chunk_seconds:g}-second chunks...",
-                    )
+                        break
+                    except Exception as exc:
+                        if not _is_cuda_oom(exc):
+                            raise
+                        del exc
+                        torch.cuda.empty_cache()
+                        if (
+                            not options.oom_recovery
+                            or chunk_seconds <= MIN_CHUNK_SECONDS
+                        ):
+                            raise SidonError(
+                                "CUDA ran out of memory even at the minimum chunk "
+                                "length. Close other GPU applications and try again."
+                            )
+                        retries += 1
+                        new_chunk_seconds = max(
+                            MIN_CHUNK_SECONDS,
+                            float(max(1, math.floor(chunk_seconds / 2))),
+                        )
+                        if new_chunk_seconds >= chunk_seconds:
+                            new_chunk_seconds = MIN_CHUNK_SECONDS
+                        chunk_seconds = new_chunk_seconds
+                        yield ProgressUpdate(
+                            26,
+                            "CUDA memory was insufficient; safely retrying with "
+                            f"{chunk_seconds:g}-second chunks...",
+                        )
 
-            yield ProgressUpdate(94, "Finalizing waveform and preventing clipping...")
-            restored = restored[:target_samples]
-            if restored.numel() < target_samples:
-                restored = torch.nn.functional.pad(
-                    restored, (0, target_samples - restored.numel())
+                yield ProgressUpdate(
+                    94, "Finalizing waveform and preventing clipping..."
                 )
-            restored = torch.nan_to_num(restored, nan=0.0, posinf=0.0, neginf=0.0)
-            output_peak = float(restored.abs().max())
-            if output_peak > 0.99:
-                restored = restored * (0.99 / output_peak)
-
-            yield ProgressUpdate(97, "Saving enhanced speech as 48 kHz WAV...")
-            output_dir = Path(output_dir)
-            output_dir.mkdir(parents=True, exist_ok=True)
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-            output_path = (
-                output_dir / f"{_safe_stem(input_path)}_enhanced_{timestamp}.wav"
-            )
-            sf.write(
-                str(output_path),
-                restored.numpy(),
-                OUTPUT_SAMPLE_RATE,
-                subtype="PCM_16",
-            )
-
-            elapsed = time.perf_counter() - started
-            peak_vram_gb = torch.cuda.max_memory_allocated(0) / 1024**3
-            details = (
-                f"**Finished in {elapsed:.1f} s**  \n"
-                f"Input: {input_duration:.1f} s at {sample_rate:,} Hz  \n"
-                f"Output: 48,000 Hz mono WAV  \n"
-                f"GPU: {cuda.name}  \n"
-                f"Chunk length: {chunk_seconds:g} s ({num_chunks} chunks)"
-                + (
-                    f" — reduced from {initial_chunk_seconds:g} s after "
-                    f"{retries} VRAM retry/retries"
-                    if retries
-                    else ""
+                partial_output_path.unlink(missing_ok=True)
+                yield ProgressUpdate(97, "Saving enhanced speech as 48 kHz WAV...")
+                self._finalize_output(
+                    temp_output_path,
+                    partial_output_path,
+                    output_peak,
                 )
-                + f"  \nPeak PyTorch VRAM: {peak_vram_gb:.2f} GB"
-            )
-            yield ProgressUpdate(
-                100,
-                "Enhancement complete.",
-                output_path=str(output_path.resolve()),
-                details=details,
-            )
+                partial_output_path.replace(output_path)
+
+                elapsed = time.perf_counter() - started
+                peak_vram_gb = torch.cuda.max_memory_allocated(0) / 1024**3
+                details = (
+                    f"**Finished in {elapsed:.1f} s**  \n"
+                    f"Input: {input_duration:.1f} s at {sample_rate:,} Hz  \n"
+                    f"Output: 48,000 Hz mono WAV  \n"
+                    f"GPU: {cuda.name}  \n"
+                    f"Chunk length: {chunk_seconds:g} s ({num_chunks} chunks)"
+                    + (
+                        f" — reduced from {initial_chunk_seconds:g} s after "
+                        f"{retries} VRAM retry/retries"
+                        if retries
+                        else ""
+                    )
+                    + f"  \nPeak PyTorch VRAM: {peak_vram_gb:.2f} GB"
+                )
+                yield ProgressUpdate(
+                    100,
+                    "Enhancement complete.",
+                    output_path=str(output_path.resolve()),
+                    details=details,
+                )
+            finally:
+                temp_output_path.unlink(missing_ok=True)
+                partial_output_path.unlink(missing_ok=True)
 
 
 ENGINE = SidonEngine()
