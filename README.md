@@ -28,7 +28,7 @@ opening the browser, so the first **Enhance Speech** click can begin immediately
 Later starts reuse the local cache.
 
 Enhanced 48 kHz WAV files are saved in `outputs/` and can also be downloaded
-from the audio player.
+or played directly with the standard Gradio audio player in the WebUI.
 
 ## Accessibility
 

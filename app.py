@@ -271,6 +271,7 @@ def build_demo() -> gr.Blocks:
                     type="filepath",
                     format="wav",
                     interactive=False,
+                    editable=False,
                 )
 
         with gr.Row():
@@ -414,7 +415,7 @@ def _preload_before_launch() -> None:
     except SidonError as exc:
         print(f"[ERROR] {exc}", flush=True)
         raise SystemExit(1) from exc
-    print("[100%] Sidon is loaded on CUDA. Starting the WebUI...", flush=True)
+    print("[100%] Loaded. Ready. Opening the WebUI...", flush=True)
     print()
 
 

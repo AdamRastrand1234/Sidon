@@ -26,8 +26,8 @@ if errorlevel 1 (
 )
 
 echo Starting Sidon at http://127.0.0.1:7860
-echo The first start downloads about 1 GB, then loads Sidon on CUDA.
-echo The browser opens only after the model is ready.
+echo Cached model files will be reused; missing files download automatically.
+echo The browser opens when Sidon reports Loaded. Ready.
 echo Press Ctrl+C to stop the WebUI.
 echo.
 ".venv\Scripts\python.exe" app.py

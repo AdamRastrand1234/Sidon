@@ -242,8 +242,8 @@ class SidonEngine:
         value = os.environ.get("SIDON_MODEL_CACHE", "").strip()
         return str(Path(value).expanduser().resolve()) if value else None
 
-    def _get_model_file(self, filename: str, token: str | None) -> str:
-        """Use the local model cache first, downloading only when missing."""
+    def _cached_model_file(self, filename: str, token: str | None) -> str | None:
+        """Return a cached model path without starting a network download."""
         arguments = {
             "repo_id": MODEL_REPO_ID,
             "filename": filename,
@@ -253,7 +253,16 @@ class SidonEngine:
         try:
             return hf_hub_download(**arguments, local_files_only=True)
         except LocalEntryNotFoundError:
-            return hf_hub_download(**arguments)
+            return None
+
+    def _download_model_file(self, filename: str, token: str | None) -> str:
+        """Download a model file that was not found in the local cache."""
+        return hf_hub_download(
+            repo_id=MODEL_REPO_ID,
+            filename=filename,
+            token=token,
+            cache_dir=self._cache_dir(),
+        )
 
     def _ensure_models(
         self,
@@ -275,16 +284,23 @@ class SidonEngine:
                 return self._feature_model, self._decoder_model
 
             token = os.environ.get("HF_TOKEN") or None
-            yield ProgressUpdate(
-                3,
-                "Downloading/checking the CUDA feature model (first run can take a while)...",
-            )
-            feature_path = self._get_model_file(FEATURE_MODEL_FILE, token)
-            yield ProgressUpdate(
-                7,
-                "Downloading/checking the CUDA decoder...",
-            )
-            decoder_path = self._get_model_file(DECODER_MODEL_FILE, token)
+            feature_path = self._cached_model_file(FEATURE_MODEL_FILE, token)
+            if feature_path is None:
+                yield ProgressUpdate(
+                    3,
+                    "Downloading the CUDA feature model "
+                    "(first run can take a while)...",
+                )
+                feature_path = self._download_model_file(FEATURE_MODEL_FILE, token)
+            else:
+                yield ProgressUpdate(3, "CUDA feature model found in cache.")
+
+            decoder_path = self._cached_model_file(DECODER_MODEL_FILE, token)
+            if decoder_path is None:
+                yield ProgressUpdate(7, "Downloading the CUDA decoder...")
+                decoder_path = self._download_model_file(DECODER_MODEL_FILE, token)
+            else:
+                yield ProgressUpdate(7, "CUDA decoder found in cache.")
 
             yield ProgressUpdate(10, "Loading Sidon models into CUDA VRAM...")
             try:

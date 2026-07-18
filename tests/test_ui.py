@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from app import _clear_ui, _progress_html
+from app import _clear_ui, _progress_html, build_demo
 from sidon_engine import ProgressUpdate
 
 
@@ -34,6 +34,23 @@ class AccessibilityUnitTests(unittest.TestCase):
         self.assertIsNone(output_audio)
         self.assertIn("<span>Ready</span>", markup)
         self.assertEqual(details, "")
+
+    def test_enhanced_result_uses_read_only_gradio_audio_player(self) -> None:
+        config = build_demo().get_config_file()
+        audio_components = [
+            component
+            for component in config["components"]
+            if component["type"] == "audio"
+        ]
+        output = next(
+            component
+            for component in audio_components
+            if component["props"]["label"] == "Step 3 — Enhanced speech result"
+        )
+        self.assertEqual(output["props"]["type"], "filepath")
+        self.assertEqual(output["props"]["format"], "wav")
+        self.assertFalse(output["props"]["interactive"])
+        self.assertFalse(output["props"]["editable"])
 
 
 if __name__ == "__main__":
